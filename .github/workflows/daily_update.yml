@@ -1,0 +1,45 @@
+name: Daily Dependency Update and Docker Build
+
+on:
+  schedule:
+    # Запуск ежедневно в 04:00 UTC (07:00 MSK)
+    - cron: '0 4 * * *'
+  workflow_dispatch: # Возможность ручного запуска из интерфейса GitHub
+
+permissions:
+  contents: write
+
+jobs:
+  update-dependencies:
+    name: Check Updates and Build
+    runs-on: ubuntu-latest
+    environment: TG_ENVS
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run update script and build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 updater.py
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add Dockerfile
+            git commit -m "chore: auto-update Dockerfile dependencies"
+            git push
+          else
+            echo "No changes detected. Nothing to commit."
+          fi

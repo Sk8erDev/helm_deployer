@@ -1,0 +1,8 @@
+*.retry
+*swp
+ansible.cfg
+*.avp
+.DS_Store
+tmp
+.idea/
+collections
