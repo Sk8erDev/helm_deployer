@@ -218,6 +218,8 @@ def update_dockerfile(dockerfile_path):
                         raise Exception(f"Ошибка push в Docker Hub: {push_result.stderr or push_result.stdout}")
                     print("✅ Образ успешно отправлен!")
                     pushed = True
+                else:
+                    print("⚠️ Пропуск отправки в Docker Hub: DOCKER_USR или DOCKER_PWD не заданы.")
 
                 msg = (
                     "✅ <b>Сборка Dockerfile успешна!</b>\n\n"
