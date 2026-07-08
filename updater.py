@@ -12,6 +12,8 @@ DOCKERFILE_PATH = "Dockerfile"
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # Опционально, для обхода лимитов GitHub API
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+DOCKER_USR = os.environ.get("DOCKER_USR")
+DOCKER_PWD = os.environ.get("DOCKER_PWD")
 
 # --- Сопоставление по умолчанию (если нет аннотации в Dockerfile) ---
 ENV_REPO_MAP = {
@@ -179,10 +181,11 @@ def update_dockerfile(dockerfile_path):
         print("\n✅ Dockerfile обновлён успешно!")
 
         # --- Запускаем сборку Docker ---
-        print("🔨 Запуск сборки Dockerfile...")
+        image_name = "sanbusrt/helm-deployer:latest"
+        print(f"🔨 Запуск сборки Dockerfile: {image_name}...")
         try:
             build_result = subprocess.run(
-                ["docker", "build", "."],
+                ["docker", "build", "-t", image_name, "."],
                 capture_output=True,
                 text=True,
                 check=False
@@ -190,11 +193,39 @@ def update_dockerfile(dockerfile_path):
             
             if build_result.returncode == 0:
                 print("✅ Сборка завершена успешно!")
+                pushed = False
+                if DOCKER_USR and DOCKER_PWD:
+                    print("🔑 Авторизация в Docker Hub...")
+                    login_result = subprocess.run(
+                        ["docker", "login", "-u", DOCKER_USR, "--password-stdin"],
+                        input=DOCKER_PWD,
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if login_result.returncode != 0:
+                        raise Exception(f"Ошибка авторизации в Docker: {login_result.stderr or login_result.stdout}")
+                    print("✅ Авторизация успешна!")
+
+                    print(f"📤 Отправка образа в Docker Hub: {image_name}...")
+                    push_result = subprocess.run(
+                        ["docker", "push", image_name],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if push_result.returncode != 0:
+                        raise Exception(f"Ошибка push в Docker Hub: {push_result.stderr or push_result.stdout}")
+                    print("✅ Образ успешно отправлен!")
+                    pushed = True
+
                 msg = (
                     "✅ <b>Сборка Dockerfile успешна!</b>\n\n"
                     "Обнаружены и применены изменения:\n" +
                     "\n".join(f"• {c}" for c in changes)
                 )
+                if pushed:
+                    msg += f"\n\n📤 Образ успешно отправлен в Docker Hub: <code>{image_name}</code>"
                 send_telegram_notification(msg)
             else:
                 print("❌ Сборка завершена с ошибкой!")
@@ -213,9 +244,9 @@ def update_dockerfile(dockerfile_path):
                 import sys
                 sys.exit(build_result.returncode)
         except Exception as e:
-            print(f"❌ Ошибка во время сборки Docker: {e}")
+            print(f"❌ Ошибка во время сборки/отправки Docker: {e}")
             msg = (
-                "❌ <b>Критическая ошибка сборки Dockerfile!</b>\n\n"
+                "❌ <b>Критическая ошибка сборки/отправки Dockerfile!</b>\n\n"
                 "Попытка применить изменения:\n" +
                 "\n".join(f"• {c}" for c in changes) +
                 f"\n\n<b>Ошибка:</b> {str(e)}"
