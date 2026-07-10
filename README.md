@@ -47,4 +47,4 @@ The image includes a curated set of DevOps tools commonly used for GitLab CI, Gi
 ## Image
 
 ```bash
-docker pull sanbusrt/helm-deployer:latest
+docker pull sanburst/helm-deployer:latest

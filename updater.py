@@ -181,7 +181,8 @@ def update_dockerfile(dockerfile_path):
         print("\n✅ Dockerfile обновлён успешно!")
 
         # --- Запускаем сборку Docker ---
-        image_name = "sanbusrt/helm-deployer:latest"
+        docker_namespace = DOCKER_USR or "sanburst"
+        image_name = f"{docker_namespace}/helm-deployer:latest"
         print(f"🔨 Запуск сборки Dockerfile: {image_name}...")
         try:
             build_result = subprocess.run(
