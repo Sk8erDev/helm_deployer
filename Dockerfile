@@ -42,14 +42,14 @@ RUN apk --no-cache add \
 
 # Download and install the latest stable kubectl binary
 RUN ARCH="${TARGETARCH:-amd64}" && \
-    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl" && \
+    curl -LO "https://dl.k8s.io/release/$(curl -sSL --retry 5 --retry-delay 2 -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl" && \
     chmod +x kubectl && \
     mv kubectl ${KUBECTL_DIR}/kubectl && \
     kubectl version --client
 
 # Installing helm
 RUN ARCH="${TARGETARCH:-amd64}" && \
-    curl -LO "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${ARCH}.tar.gz" && \
+    curl -sSL --retry 5 --retry-delay 2 -LO "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${ARCH}.tar.gz" && \
     tar xzf helm-v${HELM_VERSION}-linux-${ARCH}.tar.gz && \
     mv linux-${ARCH} $HELM_HOME && \
     rm helm-v${HELM_VERSION}-linux-${ARCH}.tar.gz && \
