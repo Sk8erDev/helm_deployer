@@ -1,4 +1,4 @@
-FROM alpine:3.23.5
+FROM alpine:20260805
 ARG TARGETARCH
 ENV KUBECTL_DIR=/usr/local/bin
 # github: helm/helm (keep-major)
