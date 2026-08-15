@@ -2,7 +2,7 @@ FROM alpine:20260805
 ARG TARGETARCH
 ENV KUBECTL_DIR=/usr/local/bin
 # github: helm/helm (keep-major)
-ENV HELM_VERSION=3.21.3
+ENV HELM_VERSION=3.21.4
 ENV HELM_HOME=/helm/
 # github: google/go-containerregistry
 ENV CR_VERSION=0.21.9
