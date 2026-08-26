@@ -5,7 +5,7 @@ ENV KUBECTL_DIR=/usr/local/bin
 ENV HELM_VERSION=3.21.4
 ENV HELM_HOME=/helm/
 # github: google/go-containerregistry
-ENV CR_VERSION=0.21.9
+ENV CR_VERSION=0.22.0
 # github: getsops/sops
 ENV SOPS_VERSION=3.13.3
 # github: werf/kubedog
