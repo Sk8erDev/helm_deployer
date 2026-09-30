@@ -6,3 +6,6 @@ ansible.cfg
 tmp
 .idea/
 collections
+__pycache__/
+*.pyc
+agy

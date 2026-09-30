@@ -10,6 +10,8 @@ ENV CR_VERSION=0.22.1
 ENV SOPS_VERSION=3.13.3
 # github: werf/kubedog
 ENV KUBEDOG_VERSION=0.13.0
+# github: werf/werf (keep-minor)
+ENV WERF_VERSION=1.2.336
 ENV PATH=$PATH:$HELM_HOME
 ENV YC_HOME=/yc
 ENV GPG_KEY_DIR=/root/.gnupg
@@ -27,6 +29,7 @@ RUN apk --no-cache add \
         py-crcmod \
         bash \
         libc6-compat \
+        gcompat \
         openssh-client \
         git \
         gnupg \
@@ -36,7 +39,6 @@ RUN apk --no-cache add \
 		docker \
         tar \
         ca-certificates \
-        git \
         util-linux \
         coreutils
 
@@ -94,6 +96,25 @@ RUN ARCH="${TARGETARCH:-amd64}" && \
     chmod +x kubedog && \
     mv kubedog /usr/local/bin/kubedog && \
     rm kubedog.sig
+
+# Installing werf
+RUN ARCH="${TARGETARCH:-amd64}" && \
+    WERF_ARCH="linux-${ARCH}" && \
+    curl -LO "https://tuf.werf.io/targets/releases/${WERF_VERSION}/${WERF_ARCH}/bin/werf" && \
+    curl -LO "https://tuf.werf.io/targets/signatures/${WERF_VERSION}/${WERF_ARCH}/bin/werf.sig" && \
+    curl -sSL https://werf.io/werf.asc | gpg --import && \
+    gpg --verify werf.sig werf && \
+    chmod +x werf && \
+    mv werf /usr/local/bin/werf && \
+    rm werf.sig
+
+# Installing multiwerf
+RUN ARCH="${TARGETARCH:-amd64}" && \
+    curl -fsSL -o /usr/local/bin/multiwerf "https://storage.yandexcloud.net/multiwerf/targets/releases/latest/multiwerf-linux-${ARCH}-latest" && \
+    chmod +x /usr/local/bin/multiwerf
+
+# Git safe directory
+RUN git config --global --add safe.directory "*"
 
 
 # Install rclone

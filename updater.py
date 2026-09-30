@@ -20,7 +20,8 @@ ENV_REPO_MAP = {
     "SOPS": "getsops/sops",
     "HELM": "helm/helm",
     "CR": "google/go-containerregistry",
-    "KUBEDOG": "werf/kubedog"
+    "KUBEDOG": "werf/kubedog",
+    "WERF": "werf/werf"
 }
 
 def send_telegram_notification(message):
@@ -69,9 +70,9 @@ def get_latest_alpine_version():
     print("❌ Не удалось найти стабильную версию Alpine.")
     return None
 
-def get_latest_github_version(repo, prefix="v", current_version=None, keep_major=False):
+def get_latest_github_version(repo, prefix="v", current_version=None, keep_mode=None, keep_major=False):
     """Получить последнюю стабильную версию с GitHub (семантически наибольшую)."""
-    url = f"https://api.github.com/repos/{repo}/releases"
+    url = f"https://api.github.com/repos/{repo}/releases?per_page=100"
     headers = {"User-Agent": "Mozilla/5.0"}
     if GITHUB_TOKEN:
         headers["Authorization"] = f"token {GITHUB_TOKEN}"
@@ -100,12 +101,19 @@ def get_latest_github_version(repo, prefix="v", current_version=None, keep_major
                     
                     versions.sort(key=semver_key, reverse=True)
                     
-                    # Если нужно ограничиться текущей мажорной версией
-                    if keep_major and current_version:
-                        current_major = semver_key(current_version)[0]
-                        filtered = [v for v in versions if semver_key(v)[0] == current_major]
-                        if filtered:
-                            return filtered[0]
+                    mode = keep_mode or ("keep-major" if keep_major else None)
+
+                    # Если нужно ограничиться текущей минорной версией (например, 1.2.x)
+                    if mode == "keep-minor" and current_version:
+                        target_minor = semver_key(current_version)[:2]
+                        filtered = [v for v in versions if semver_key(v)[:2] == target_minor]
+                        return filtered[0] if filtered else current_version
+
+                    # Если нужно ограничиться текущей мажорной версией (например, 3.x)
+                    if mode == "keep-major" and current_version:
+                        target_major = semver_key(current_version)[0]
+                        filtered = [v for v in versions if semver_key(v)[0] == target_major]
+                        return filtered[0] if filtered else current_version
                             
                     return versions[0]
     except Exception as e:
@@ -148,7 +156,7 @@ def update_dockerfile(dockerfile_path):
             repo = None
             option = None
             if prev_line.strip().startswith("# github:"):
-                comment_match = re.match(r"^#\s*github:\s*([\w.-]+/[\w.-]+)(?:\s*\((keep-major)\))?", prev_line.strip())
+                comment_match = re.match(r"^#\s*github:\s*([\w.-]+/[\w.-]+)(?:\s*\((keep-major|keep-minor)\))?", prev_line.strip())
                 if comment_match:
                     repo, option = comment_match.groups()
 
@@ -157,11 +165,10 @@ def update_dockerfile(dockerfile_path):
                 repo = ENV_REPO_MAP.get(env_var)
 
             if repo:
-                keep_major = (option == "keep-major")
                 latest_version = get_latest_github_version(
                     repo, 
                     current_version=current_version, 
-                    keep_major=keep_major
+                    keep_mode=option
                 )
 
             if latest_version and latest_version != current_version:
