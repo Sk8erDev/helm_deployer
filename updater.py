@@ -4,8 +4,10 @@ import urllib.request
 import urllib.error
 import json
 import os
+import sys
 import subprocess
 import html
+import shutil
 
 # --- Настройки ---
 DOCKERFILE_PATH = "Dockerfile"
@@ -33,7 +35,8 @@ def send_telegram_notification(message):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
-        "parse_mode": "HTML"
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -50,8 +53,11 @@ def send_telegram_notification(message):
     except Exception as e:
         print(f"❌ Ошибка отправки Telegram: {e}")
 
+def semver_key(v):
+    """Функция для семантического сравнения версий по числам."""
+    parts = re.findall(r"\d+", v)
+    return tuple(map(int, parts)) if parts else (0,)
 
-# --- Функции ---
 def get_latest_alpine_version():
     """Получить последнюю стабильную версию Alpine (не latest)."""
     url = "https://registry.hub.docker.com/v2/repositories/library/alpine/tags?page_size=100&ordering=last_updated"
@@ -94,13 +100,7 @@ def get_latest_github_version(repo, prefix="v", current_version=None, keep_mode=
                         versions.append(version)
                 
                 if versions:
-                    # Функция для семантического сравнения версий по числам
-                    def semver_key(v):
-                        parts = re.findall(r"\d+", v)
-                        return tuple(map(int, parts)) if parts else (0,)
-                    
                     versions.sort(key=semver_key, reverse=True)
-                    
                     mode = keep_mode or ("keep-major" if keep_major else None)
 
                     # Если нужно ограничиться текущей минорной версией (например, 1.2.x)
@@ -122,15 +122,152 @@ def get_latest_github_version(repo, prefix="v", current_version=None, keep_mode=
     print(f"❌ Не найден стабильный релиз для {repo}.")
     return None
 
-def update_dockerfile(dockerfile_path):
-    """Обновить Dockerfile и вывести, какие версии изменились."""
+def map_target_to_component(target):
+    """Сопоставление цели сканирования Trivy с компонентом Dockerfile."""
+    t = target.lower()
+    if "alpine" in t:
+        return "ALPINE"
+    elif "helm" in t:
+        return "HELM"
+    elif "sops" in t:
+        return "SOPS"
+    elif "kubedog" in t:
+        return "KUBEDOG"
+    elif "werf" in t:
+        return "WERF"
+    elif any(k in t for k in ["crane", "gcrane", "krane", "containerregistry"]):
+        return "CR"
+    return None
+
+def run_trivy_scan(image_name, sarif_output="trivy-results.sarif", json_output="trivy-results.json"):
+    """
+    Запустить сканирование уязвимостей через Trivy.
+    Генерирует JSON для анализа и SARIF для загрузки в GitHub Security.
+    """
+    trivy_bin = shutil.which("trivy")
+    print(f"\n🔍 Запуск SAST / Vulnerability сканирования образа {image_name}...")
+    
+    # 1. Генерация SARIF отчёта (для GitHub Code Scanning)
+    sarif_cmd = []
+    if trivy_bin:
+        sarif_cmd = [
+            trivy_bin, "image",
+            "--scanners", "vuln",
+            "--severity", "CRITICAL,HIGH",
+            "--format", "sarif",
+            "-o", sarif_output,
+            image_name
+        ]
+    else:
+        sarif_cmd = [
+            "docker", "run", "--rm",
+            "-v", "/var/run/docker.sock:/var/run/docker.sock",
+            "-v", f"{os.getcwd()}:/work", "-w", "/work",
+            "aquasec/trivy:latest", "image",
+            "--scanners", "vuln",
+            "--severity", "CRITICAL,HIGH",
+            "--format", "sarif",
+            "-o", sarif_output,
+            image_name
+        ]
+    
+    try:
+        subprocess.run(sarif_cmd, capture_output=True, text=True, check=False)
+        if os.path.exists(sarif_output):
+            print(f"✅ SARIF отчет сохранен: {sarif_output}")
+    except Exception as e:
+        print(f"⚠️ Не удалось сгенерировать SARIF: {e}")
+
+    # 2. Генерация JSON отчёта (для программного анализа уязвимостей)
+    json_cmd = []
+    if trivy_bin:
+        json_cmd = [
+            trivy_bin, "image",
+            "--scanners", "vuln",
+            "--severity", "CRITICAL,HIGH",
+            "--format", "json",
+            "-o", json_output,
+            image_name
+        ]
+    else:
+        json_cmd = [
+            "docker", "run", "--rm",
+            "-v", "/var/run/docker.sock:/var/run/docker.sock",
+            "-v", f"{os.getcwd()}:/work", "-w", "/work",
+            "aquasec/trivy:latest", "image",
+            "--scanners", "vuln",
+            "--severity", "CRITICAL,HIGH",
+            "--format", "json",
+            "-o", json_output,
+            image_name
+        ]
+    
+    try:
+        subprocess.run(json_cmd, capture_output=True, text=True, check=False)
+        if not os.path.exists(json_output):
+            print("⚠️ Файл отчета Trivy JSON не создан.")
+            return None
+            
+        with open(json_output, "r") as f:
+            trivy_data = json.load(f)
+            
+        results = trivy_data.get("Results", [])
+        vulns_by_comp = {}
+        all_vulns = []
+        total_critical = 0
+        total_high = 0
+        
+        for r in results:
+            target = r.get("Target", "")
+            comp = map_target_to_component(target)
+            for v in r.get("Vulnerabilities", []) or []:
+                sev = v.get("Severity", "UNKNOWN")
+                cve = v.get("VulnerabilityID", "")
+                pkg = v.get("PkgName", "")
+                inst_ver = v.get("InstalledVersion", "")
+                fixed_ver = v.get("FixedVersion", "")
+                
+                if sev == "CRITICAL":
+                    total_critical += 1
+                elif sev == "HIGH":
+                    total_high += 1
+                    
+                info = {
+                    "cve": cve,
+                    "severity": sev,
+                    "pkg": pkg,
+                    "installed": inst_ver,
+                    "fixed": fixed_ver,
+                    "target": target,
+                    "component": comp
+                }
+                all_vulns.append(info)
+                if comp:
+                    vulns_by_comp.setdefault(comp, []).append(info)
+                    
+        return {
+            "total_critical": total_critical,
+            "total_high": total_high,
+            "vulns_by_comp": vulns_by_comp,
+            "all_vulns": all_vulns
+        }
+    except Exception as e:
+        print(f"❌ Ошибка выполнения Trivy сканирования: {e}")
+        return None
+
+def check_and_update_dockerfile(dockerfile_path, only_components=None, force_relax_keep=False):
+    """
+    Проверить и обновить версии компонентов в Dockerfile.
+    Если указан only_components, обновляет только их.
+    Если force_relax_keep=True, разрешает поиск более новой мажорной/минорной версии.
+    """
     with open(dockerfile_path, "r") as file:
         dockerfile_content = file.readlines()
 
     updated_content = []
-    latest_alpine_version = get_latest_alpine_version()
-    if latest_alpine_version:
-        print(f"✅ Последняя стабильная версия Alpine: {latest_alpine_version}")
+    latest_alpine_version = None
+    if only_components is None or "ALPINE" in only_components:
+        latest_alpine_version = get_latest_alpine_version()
 
     changes = []
     for i, line in enumerate(dockerfile_content):
@@ -138,12 +275,13 @@ def update_dockerfile(dockerfile_path):
 
         # --- Обновляем Alpine ---
         if line.startswith("FROM alpine:") and latest_alpine_version:
-            match_alpine = re.match(r"FROM alpine:([^ \r\n]+)", line)
-            old_alpine_version = match_alpine.group(1) if match_alpine else None
-            line = re.sub(r"FROM alpine:[^ \r\n]+", f"FROM alpine:{latest_alpine_version}", line)
-            if line != original_line:
-                print(f"🔹 Alpine: {original_line.strip()} → {line.strip()}")
-                changes.append(f"Alpine: {old_alpine_version} → {latest_alpine_version}")
+            if only_components is None or "ALPINE" in only_components:
+                match_alpine = re.match(r"FROM alpine:([^ \r\n]+)", line)
+                old_alpine_version = match_alpine.group(1) if match_alpine else None
+                line = re.sub(r"FROM alpine:[^ \r\n]+", f"FROM alpine:{latest_alpine_version}", line)
+                if line != original_line:
+                    print(f"🔹 Alpine: {original_line.strip()} → {line.strip()}")
+                    changes.append(f"Alpine: {old_alpine_version} → {latest_alpine_version}")
 
         # --- Обновляем ENV переменные ---
         match = re.match(r"^ENV (\w+)_VERSION=([\w.-]+)", line.strip())
@@ -151,121 +289,167 @@ def update_dockerfile(dockerfile_path):
             env_var, current_version = match.groups()
             latest_version = None
 
-            # Ищем репозиторий и опции на предыдущей строке-комментарии
-            prev_line = dockerfile_content[i - 1] if i > 0 else ""
-            repo = None
-            option = None
-            if prev_line.strip().startswith("# github:"):
-                comment_match = re.match(r"^#\s*github:\s*([\w.-]+/[\w.-]+)(?:\s*\((keep-major|keep-minor)\))?", prev_line.strip())
-                if comment_match:
-                    repo, option = comment_match.groups()
+            if only_components is None or env_var in only_components:
+                prev_line = dockerfile_content[i - 1] if i > 0 else ""
+                repo = None
+                option = None
+                if prev_line.strip().startswith("# github:"):
+                    comment_match = re.match(r"^#\s*github:\s*([\w.-]+/[\w.-]+)(?:\s*\((keep-major|keep-minor)\))?", prev_line.strip())
+                    if comment_match:
+                        repo, option = comment_match.groups()
 
-            # Если репозиторий не указан в комментарии, берем из дефолтной мапы
-            if not repo:
-                repo = ENV_REPO_MAP.get(env_var)
+                if not repo:
+                    repo = ENV_REPO_MAP.get(env_var)
 
-            if repo:
-                latest_version = get_latest_github_version(
-                    repo, 
-                    current_version=current_version, 
-                    keep_mode=option
-                )
+                if repo:
+                    keep_mode = None if force_relax_keep else option
+                    latest_version = get_latest_github_version(
+                        repo, 
+                        current_version=current_version, 
+                        keep_mode=keep_mode
+                    )
 
-            if latest_version and latest_version != current_version:
-                line = f"ENV {env_var}_VERSION={latest_version}\n"
-                print(f"🔹 {env_var}: {current_version} → {latest_version}")
-                changes.append(f"{env_var}_VERSION: {current_version} → {latest_version}")
-            else:
-                line = original_line
+                if latest_version and latest_version != current_version:
+                    line = f"ENV {env_var}_VERSION={latest_version}\n"
+                    print(f"🔹 {env_var}: {current_version} → {latest_version}")
+                    changes.append(f"{env_var}_VERSION: {current_version} → {latest_version}")
+                else:
+                    line = original_line
 
         updated_content.append(line)
 
-    if changes:
-        # --- Сохраняем Dockerfile ---
-        with open(dockerfile_path, "w") as file:
-            file.writelines(updated_content)
+    return updated_content, changes
 
-        print("\n✅ Dockerfile обновлён успешно!")
+def update_dockerfile(dockerfile_path):
+    """Основной процесс: проверка обновлений, сборка, SAST сканирование и подъем версий."""
+    docker_namespace = DOCKER_USR or "sanbusrt"
+    image_name = f"{docker_namespace}/helm-deployer:latest"
+    
+    # Шаг 1: Проверка плановых обновлений версий
+    print("🔍 Шаг 1: Проверка плановых обновлений версий...")
+    updated_content, scheduled_changes = check_and_update_dockerfile(dockerfile_path)
+    
+    all_changes = list(scheduled_changes)
+    
+    if scheduled_changes:
+        print(f"✅ Обнаружены плановые обновления ({len(scheduled_changes)}):")
+        for c in scheduled_changes:
+            print(f"  • {c}")
+        with open(dockerfile_path, "w") as f:
+            f.writelines(updated_content)
+    else:
+        print("ℹ️ Плановых обновлений не обнаружено.")
 
-        # --- Запускаем сборку Docker ---
-        docker_namespace = DOCKER_USR or "sanbusrt"
-        image_name = f"{docker_namespace}/helm-deployer:latest"
-        print(f"🔨 Запуск сборки Dockerfile: {image_name}...")
-        try:
-            build_result = subprocess.run(
-                ["docker", "build", "-t", image_name, "."],
-                capture_output=True,
-                text=True,
-                check=False
+    # Шаг 2: Сборка образа для SAST/Vulnerability проверки
+    print(f"\n🔨 Шаг 2: Сборка Dockerfile для проверки: {image_name}...")
+    build_result = subprocess.run(
+        ["docker", "build", "-t", image_name, "."],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    if build_result.returncode != 0:
+        print("❌ Сборка завершена с ошибкой!")
+        log = build_result.stderr or build_result.stdout
+        log_tail = log[-1500:] if log else "Нет вывода логов."
+        msg = f"❌ <b>Ошибка сборки Dockerfile!</b>\n\n<pre>{html.escape(log_tail)}</pre>"
+        send_telegram_notification(msg)
+        sys.exit(build_result.returncode)
+
+    print("✅ Сборка успешно завершена.")
+
+    # Шаг 3: SAST / Vulnerability сканирование
+    print("\n🛡️ Шаг 3: Запуск SAST сканирования и анализа уязвимостей...")
+    scan_report = run_trivy_scan(image_name)
+    security_changes = []
+
+    if scan_report:
+        crit = scan_report["total_critical"]
+        high = scan_report["total_high"]
+        vulns_by_comp = scan_report["vulns_by_comp"]
+        print(f"📊 Результаты SAST сканирования: CRITICAL={crit}, HIGH={high}")
+
+        if vulns_by_comp:
+            print(f"⚠️ Уязвимости обнаружены в компонентах: {', '.join(vulns_by_comp.keys())}")
+            print("🚀 Попытка поднять версии уязвимых компонентов в Dockerfile...")
+            sec_content, sec_changes = check_and_update_dockerfile(
+                dockerfile_path,
+                only_components=set(vulns_by_comp.keys()),
+                force_relax_keep=False
             )
             
-            if build_result.returncode == 0:
-                print("✅ Сборка завершена успешно!")
-                pushed = False
-                if DOCKER_USR and DOCKER_PWD:
-                    print("🔑 Авторизация в Docker Hub...")
-                    login_result = subprocess.run(
-                        ["docker", "login", "-u", DOCKER_USR, "--password-stdin"],
-                        input=DOCKER_PWD,
-                        capture_output=True,
-                        text=True,
-                        check=False
-                    )
-                    if login_result.returncode != 0:
-                        raise Exception(f"Ошибка авторизации в Docker: {login_result.stderr or login_result.stdout}")
-                    print("✅ Авторизация успешна!")
+            if sec_changes:
+                print(f"✅ Подняты версии уязвимых компонентов ({len(sec_changes)}):")
+                for sc in sec_changes:
+                    print(f"  • {sc}")
+                with open(dockerfile_path, "w") as f:
+                    f.writelines(sec_content)
+                security_changes.extend(sec_changes)
+                all_changes.extend([f"{sc} (Security Fix)" for sc in sec_changes])
 
-                    print(f"📤 Отправка образа в Docker Hub: {image_name}...")
-                    push_result = subprocess.run(
-                        ["docker", "push", image_name],
-                        capture_output=True,
-                        text=True,
-                        check=False
-                    )
-                    if push_result.returncode != 0:
-                        raise Exception(f"Ошибка push в Docker Hub: {push_result.stderr or push_result.stdout}")
-                    print("✅ Образ успешно отправлен!")
-                    pushed = True
+                # Пересобираем образ с обновленными компонентами
+                print(f"🔨 Пересборка Dockerfile с обновленными компонентами...")
+                rebuild_res = subprocess.run(
+                    ["docker", "build", "-t", image_name, "."],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if rebuild_res.returncode == 0:
+                    print("✅ Пересборка успешна. Повторное сканирование...")
+                    scan_report = run_trivy_scan(image_name)
                 else:
-                    print("⚠️ Пропуск отправки в Docker Hub: DOCKER_USR или DOCKER_PWD не заданы.")
-
-                msg = (
-                    "✅ <b>Сборка Dockerfile успешна!</b>\n\n"
-                    "Обнаружены и применены изменения:\n" +
-                    "\n".join(f"• {c}" for c in changes)
-                )
-                if pushed:
-                    msg += f"\n\n📤 Образ успешно отправлен в Docker Hub: <code>{image_name}</code>"
-                send_telegram_notification(msg)
+                    print("❌ Ошибка пересборки после обновления компонентов безопасности.")
             else:
-                print("❌ Сборка завершена с ошибкой!")
-                # Получаем логи сборки
-                log = build_result.stderr if build_result.stderr else build_result.stdout
-                log_tail = log[-1500:] if log else "Нет вывода логов."
-                escaped_log = html.escape(log_tail)
-                
-                msg = (
-                    "❌ <b>Сборка Dockerfile завершилась с ошибкой!</b>\n\n"
-                    "Попытка применить изменения:\n" +
-                    "\n".join(f"• {c}" for c in changes) +
-                    f"\n\n<b>Последние строки лога сборки:</b>\n<pre>{escaped_log}</pre>"
-                )
-                send_telegram_notification(msg)
-                import sys
-                sys.exit(build_result.returncode)
-        except Exception as e:
-            print(f"❌ Ошибка во время сборки/отправки Docker: {e}")
-            msg = (
-                "❌ <b>Критическая ошибка сборки/отправки Dockerfile!</b>\n\n"
-                "Попытка применить изменения:\n" +
-                "\n".join(f"• {c}" for c in changes) +
-                f"\n\n<b>Ошибка:</b> {str(e)}"
-            )
-            send_telegram_notification(msg)
-            import sys
-            sys.exit(1)
+                print("ℹ️ Уязвимые компоненты уже имеют максимально доступные версии в заданных ветках.")
+
+    # Шаг 4: Отправка в Docker Hub (если были изменения и заданы учетные данные)
+    pushed = False
+    if all_changes and DOCKER_USR and DOCKER_PWD:
+        print("\n🔑 Шаг 4: Авторизация в Docker Hub...")
+        login_res = subprocess.run(
+            ["docker", "login", "-u", DOCKER_USR, "--password-stdin"],
+            input=DOCKER_PWD,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if login_res.returncode == 0:
+            print(f"📤 Отправка образа в Docker Hub: {image_name}...")
+            push_res = subprocess.run(["docker", "push", image_name], capture_output=True, text=True, check=False)
+            if push_res.returncode == 0:
+                print("✅ Образ успешно отправлен в Docker Hub!")
+                pushed = True
+            else:
+                print(f"❌ Ошибка push в Docker Hub: {push_res.stderr}")
+        else:
+            print("❌ Ошибка авторизации в Docker Hub.")
+
+    # Шаг 5: Формирование и отправка уведомления в Telegram
+    if all_changes or (scan_report and (scan_report["total_critical"] > 0 or scan_report["total_high"] > 0)):
+        msg_parts = []
+        if all_changes:
+            msg_parts.append("✅ <b>Обновления Dockerfile применены!</b>\n")
+            msg_parts.append("<b>Изменения:</b>")
+            for c in all_changes:
+                msg_parts.append(f"• {html.escape(c)}")
+        else:
+            msg_parts.append("🛡️ <b>Отчёт SAST / Security Scan</b>\n")
+
+        if scan_report:
+            msg_parts.append(f"\n<b>Уязвимости:</b> CRITICAL: {scan_report['total_critical']}, HIGH: {scan_report['total_high']}")
+            if scan_report["vulns_by_comp"]:
+                msg_parts.append("\n<b>Затронутые компоненты:</b>")
+                for comp, vlist in scan_report["vulns_by_comp"].items():
+                    cve_preview = ", ".join(sorted(list(set(v['cve'] for v in vlist)))[:3])
+                    msg_parts.append(f"• <b>{html.escape(comp)}</b> ({len(vlist)} CVE): <code>{html.escape(cve_preview)}</code>")
+
+        if pushed:
+            msg_parts.append(f"\n📤 Образ успешно отправлен в Docker Hub: <code>{image_name}</code>")
+
+        send_telegram_notification("\n".join(msg_parts))
     else:
-        print("ℹ️ Изменений не обнаружено. Сборка не требуется.")
+        print("ℹ️ Изменений не обнаружено и критических уязвимостей нет. Сборка завершена.")
 
 # --- Запуск ---
 if __name__ == "__main__":

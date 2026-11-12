@@ -1,4 +1,4 @@
-name: Daily Dependency Update and Docker Build
+name: Daily Dependency Update, SAST Scan and Docker Build
 
 on:
   schedule:
@@ -8,10 +8,11 @@ on:
 
 permissions:
   contents: write
+  security-events: write
 
 jobs:
   update-dependencies:
-    name: Check Updates and Build
+    name: Check Updates, SAST Scan and Build
     runs-on: ubuntu-latest
     environment: TG_ENVS
 
@@ -24,7 +25,17 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Run update script and build
+      - name: Set up Trivy (SAST / Vulnerability Scanner)
+        uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          cache: true
+
+      - name: Run SAST check on Dockerfile (Misconfiguration)
+        run: |
+          echo "=== Running SAST check on Dockerfile ==="
+          trivy config Dockerfile --severity HIGH,CRITICAL --exit-code 0
+
+      - name: Run update script, security scan and build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -34,13 +45,20 @@ jobs:
         run: |
           python3 updater.py
 
+      - name: Upload Trivy SARIF report to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy-container-analysis'
+
       - name: Commit and push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ -n "$(git status --porcelain)" ]; then
             git add Dockerfile
-            git commit -m "chore: auto-update Dockerfile dependencies"
+            git commit -m "chore: auto-update Dockerfile dependencies and security fixes"
             git push
           else
             echo "No changes detected. Nothing to commit."

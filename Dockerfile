@@ -22,7 +22,8 @@ ENV KUBEDOG_FORCE_COLOR=true
 RUN env
 
 # Install dependencies
-RUN apk --no-cache add \
+RUN apk --no-cache upgrade && \
+    apk --no-cache add \
         curl \
         python3 \
         py3-pip \
@@ -124,6 +125,7 @@ RUN ARCH="${TARGETARCH:-amd64}" && \
     cd rclone-*-linux-${ARCH} && \
     cp rclone /usr/bin/ && \
     chown root:root /usr/bin/rclone && \
-    chmod 755 /usr/bin/rclone
+    chmod 755 /usr/bin/rclone && \
+    cd / && rm -rf /rclone*
 
 VOLUME ["/root/.config"]
