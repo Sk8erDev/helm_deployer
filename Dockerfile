@@ -2,7 +2,7 @@ FROM alpine:3.24.4
 ARG TARGETARCH
 ENV KUBECTL_DIR=/usr/local/bin
 # github: helm/helm (keep-major)
-ENV HELM_VERSION=3.22.1
+ENV HELM_VERSION=4.3.1
 ENV HELM_HOME=/helm/
 # github: google/go-containerregistry
 ENV CR_VERSION=0.22.1
@@ -57,9 +57,9 @@ RUN ARCH="${TARGETARCH:-amd64}" && \
     mv linux-${ARCH} $HELM_HOME && \
     rm helm-v${HELM_VERSION}-linux-${ARCH}.tar.gz && \
     mkdir -p $HELM_HOME/plugins && \
-	helm plugin install https://github.com/jkroepke/helm-secrets && \
-    helm plugin install https://github.com/chartmuseum/helm-push && \
-    helm version --short --client
+    helm plugin install --verify=false https://github.com/jkroepke/helm-secrets && \
+    helm plugin install --verify=false https://github.com/chartmuseum/helm-push && \
+    helm version --short
 
 # Installing container registry tools
 RUN ARCH="${TARGETARCH:-amd64}" && \

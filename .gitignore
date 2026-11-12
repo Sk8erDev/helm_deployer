@@ -9,3 +9,4 @@ collections
 __pycache__/
 *.pyc
 agy
+trivy-results.*

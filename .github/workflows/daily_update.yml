@@ -56,10 +56,10 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ -n "$(git status --porcelain)" ]; then
+          if [ -n "$(git status --porcelain Dockerfile)" ]; then
             git add Dockerfile
             git commit -m "chore: auto-update Dockerfile dependencies and security fixes"
             git push
           else
-            echo "No changes detected. Nothing to commit."
+            echo "No changes detected in Dockerfile. Nothing to commit."
           fi
